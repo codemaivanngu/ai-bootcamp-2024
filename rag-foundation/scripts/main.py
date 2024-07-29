@@ -1,5 +1,7 @@
 import json
 from pathlib import Path
+from time import perf_counter
+
 
 import fire
 from llama_index.core import Document
@@ -64,6 +66,8 @@ def prepare_vector_store(documents: list, mode: str, force_index=False, chunk_si
     if force_index:
         nodes = prepare_data_nodes(documents=documents, chunk_size=chunk_size)
         vector_store.add(nodes)
+        # if mode=="sparse":
+        #     vector_store._initialize_bm25_assets()
 
     return vector_store
 
@@ -84,31 +88,43 @@ class RAGPipeline:
         # from langchain_openai import ChatOpenAI
         # self.model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 
+        #ollama
+        from langchain_ollama.llms import OllamaLLM
+        self.model = OllamaLLM(model="qwen2:0.5b")
+
+
+
     def retrieve(self, query: str, top_k: int = 5) -> VectorStoreQueryResult:
         query_result = self.vector_store.query(query, top_k=top_k)
         return query_result
 
     def answer(self, query: str, top_k: int = 5) -> tuple[str, list[str]]:
         # Generate openai code to answer the query
+        tin=perf_counter()#print("start retrieve",tin:=perf_counter())
         result = self.retrieve(query, top_k=top_k)
+        print(f"retrieve successful in {perf_counter()-tin}s")
         context_list = [node.text for node in result.nodes]
+        # print(f"len of context_list {len(context_list)}")
         context = "\n\n".join(context_list)
-
+        tin=perf_counter()#print("model start answer",tin:=perf_counter())
         self.prompt_template = (
             f"""Question: {query}\n\nGiven context: {context}\n\nAnswer:"""
         )
+        print(f"context length {len(self.prompt_template)}")
+        
 
         if not self.model:
             raise ValueError("Model not found. Please initialize the model first.")
         try:
             response = self.model.invoke(self.prompt_template)
+            print(f"model answer finished in {perf_counter()-tin}s             ====================")
         except Exception as e:
             raise Exception(f"Error in calling the model: {e}")
-        return response.content, context_list
+        return response, context_list
 
 
 def main(
-    data_path: Path = Path("data/qasper-test-v0.3.json"),
+    data_path: Path = Path("qasper-test-v0.3.json"),
     output_path: Path = Path("predictions.jsonl"),
     mode: str = "sparse",
     force_index: bool = False,
@@ -140,6 +156,8 @@ def main(
     # we will loop through each paper, gather the full text of each section
     # and prepare the documents for the vector store
     # and answer the query
+
+    from time import perf_counter
     for _, values in raw_data.items():
         # for each paper in qasper
         documents = []
@@ -181,17 +199,20 @@ def main(
                 predicted_answers.append("")
 
             else:
+                print(f"start")
                 predicted_answer, context_list = rag_pipeline.answer(query, top_k=top_k)
 
                 # Just In Case. Print out the context list for each question
                 # if needed.
                 if print_context:
                     for i, context in enumerate(context_list):
-                        print(f"Relevent context {i + 1}:", context)
-                        print("\n\n")
+                        # print(f"Relevent context {i + 1}:", context)
+                        print(f"Relevent context {i + 1}:")
+
+                        # print("\n\n")
 
                     print("LLM Answer")
-                    print(predicted_answer)
+                    # print(predicted_answer)
 
                 predicted_evidences.append(context_list)
                 predicted_answers.append(predicted_answer)
@@ -215,3 +236,14 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
+
+"""
+
+python -m scripts.main --output_path predictions-ollama-llama.jsonl --mode sparse --force_index False --retrieval_only False --top_k 5
+python -m scripts.main --output_path predictions-ollama-phi3.jsonl --mode sparse --force_index False --retrieval_only False --top_k 5
+
+python -m scripts.main --output_path predictions-ollama-qwen2.jsonl --mode sparse --force_index False --retrieval_only False --top_k 5
+
+python -m scripts.main --output_path predictions-none.jsonl --mode sparse --force_index False --retrieval_only True --top_k 5
+
+"""

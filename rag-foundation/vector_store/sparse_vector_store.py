@@ -4,6 +4,7 @@ import sys
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from typing import ClassVar, Dict, List
+from time import perf_counter
 
 import numpy as np
 from loguru import logger
@@ -22,8 +23,9 @@ logger.add(
 TOKENIZER = AutoTokenizer.from_pretrained(
     "google-bert/bert-base-uncased", max_length=200, truncation=True
 )
-
-
+BBB=0
+t0=perf_counter()
+t=perf_counter()
 class SparseVectorStore(BaseVectorStore):
     """VectorStore2 (add/get/delete implemented)."""
 
@@ -32,7 +34,7 @@ class SparseVectorStore(BaseVectorStore):
     tokenizer: ClassVar[AutoTokenizer] = TOKENIZER
     corpus_size: int = Field(default=0, init=False)
     avgdl: float = Field(default=0.0, init=False)
-    doc_freqs: List[Dict[str, int]] = Field(default_factory=list, init=False)
+    doc_freqs: List[Dict[str, int]] = Field(default_factory=list, init=False)#list[document{word:frequency}]
     idf: Dict[str, float] = Field(default_factory=dict, init=False)
     doc_len: List[int] = Field(default_factory=list, init=False)
     nd: int = Field(default=0, init=False)
@@ -87,10 +89,11 @@ class SparseVectorStore(BaseVectorStore):
 
     def _initialize(self, corpus: List[List[str]]):
         nd = {}  # word -> number of documents with word
-        num_doc = 0
+        num_doc = 0 # total number of sentences
+        #corpus[document[word|string?]]
         for document in corpus:
-            self.doc_len.append(len(document))
-            num_doc += len(document)
+            self.doc_len.append(len(document))#list[document's length]
+            num_doc += len(document)#words/strings
 
             frequencies = {}
             for word in document:
@@ -107,7 +110,7 @@ class SparseVectorStore(BaseVectorStore):
 
             self.corpus_size += 1
 
-        self.avgdl = num_doc / self.corpus_size
+        self.avgdl = num_doc / self.corpus_size 
         self.idf = {
             word: self._calculate_idf(doc_count, self.corpus_size)
             for word, doc_count in nd.items()
@@ -117,14 +120,14 @@ class SparseVectorStore(BaseVectorStore):
         # Calculate the inverse document frequency for a word
         # HINT: Use the formula provided in the BM25 algorithm and np.log()
         "Your code here"
-        idf_score = None
+        idf_score = np.log(1+(corpus_size-doc_count+0.5)/(doc_count+0.5))
         return idf_score
 
     def _tokenize_text(self, corpus: List[str] | str):
         if isinstance(corpus, str):
             return self.tokenizer.tokenize(corpus)
         else:
-            pool = Pool(cpu_count())
+            pool = Pool(cpu_count()) #"multiprocessing.Pool" to parallelize the tokenization process 
             tokenized_corpus = pool.map(self.tokenizer.tokenize, corpus)
             return tokenized_corpus
 
@@ -132,6 +135,9 @@ class SparseVectorStore(BaseVectorStore):
         """Add nodes to index."""
         for node in nodes:
             self.node_dict[node.id_] = node
+
+        self.node_list=list(self.node_dict.values())
+
         self._update_csv()  # Update CSV after adding nodes
 
         # Reinitialize BM25 assets after adding new nodes
@@ -154,7 +160,20 @@ class SparseVectorStore(BaseVectorStore):
             # calulate the score for each token in the query
             # HINT: use self.doc_freqs, self.idf, self.corpus_size, self.avgdl
             "Your code here"
-            cur_score = None
+            idf = float(self.idf.get(q,0))
+            # tf = self.doc_freqs[i].get(q,0)
+            tf_fancy = np.zeros(self.corpus_size)
+            for i in range(self.corpus_size):
+                # if i % 100==0:print(i,end=" ")
+                tf = self.doc_freqs[i].get(q,0)
+                # print(self.k1,tf*self.k1*(1-self.b+self.b*self.doc_len[i]/self.avgdl),self.b,self.doc_len[i]/self.avgdl,1-self.b+self.b*self.doc_len[i]/self.avgdl,tf)
+                tf_fancy[i] = tf/(tf+self.k1*(1-self.b+self.b*self.doc_len[i]/self.avgdl))
+                # tf_fancy[i] = tf/self.avgdl
+
+            #  = np.ndarray([ for i in range(self.corpus_size)])
+
+            cur_score = idf * tf_fancy
+
             score += cur_score
         return score
 
@@ -170,6 +189,14 @@ class SparseVectorStore(BaseVectorStore):
         """
         scores = self.get_scores(query)
         best_ids = np.argsort(scores)[::-1][:top_k]
+        global BBB
+        global t
+        BBB+=1
+        t=perf_counter()
+        print(best_ids,f"{BBB}/1451",f"avg{(t-t0)/BBB}s")
+        
+        
+        
         nodes = [self.node_list[node_id] for node_id in best_ids]
         return VectorStoreQueryResult(
             nodes=nodes,
